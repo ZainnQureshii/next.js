@@ -2161,6 +2161,7 @@ mod must_exist_tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(target_family = "wasm", ignore = "no unwinding on wasm")]
     async fn missing_category_does_not_wait_for_unrelated_peer_restore() {
         use std::{
             panic::{AssertUnwindSafe, catch_unwind},
@@ -2204,6 +2205,7 @@ mod must_exist_tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(target_family = "wasm", ignore = "no unwinding on wasm")]
     async fn prepare_tasks_does_not_publish_empty_category_while_peer_restores() {
         use std::{
             panic::{AssertUnwindSafe, catch_unwind},
@@ -2248,6 +2250,7 @@ mod must_exist_tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(target_family = "wasm", ignore = "no unwinding on wasm")]
     async fn missing_task_is_not_marked_present_after_must_exist_panics() {
         use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -2275,6 +2278,7 @@ mod must_exist_tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(target_family = "wasm", ignore = "no unwinding on wasm")]
     async fn missing_batch_is_not_marked_present_after_must_exist_panics() {
         use std::panic::{AssertUnwindSafe, catch_unwind};
 
