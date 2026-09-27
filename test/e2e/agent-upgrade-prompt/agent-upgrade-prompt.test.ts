@@ -3,7 +3,7 @@ import { execFileSync } from 'child_process'
 import { createRequire } from 'module'
 import { join } from 'path'
 import resolveFrom from 'resolve-from'
-import { isNextDev, nextTestSetup } from 'e2e-utils'
+import { isNextDev, isNextStart, nextTestSetup } from 'e2e-utils'
 import { findPort, retry } from 'next-test-utils'
 
 describe('agent upgrade prompt', () => {
@@ -507,4 +507,118 @@ describe('agent upgrade prompt', () => {
     })
   })
 
+  describe('next build', () => {
+    if (!isNextStart) {
+      it.skip('runs only in start mode', () => {})
+      return
+    }
+
+    function startBuild() {
+      const nextBin = process.env.NEXT_SKIP_ISOLATE
+        ? join(process.cwd(), 'packages/next/dist/bin/next')
+        : resolveFrom(next.testDir, 'next/dist/bin/next')
+      const pty = createRequire(
+        join(process.cwd(), 'packages/next/package.json')
+      )('node-pty')
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        __NEXT_AGENTIC_AUTO_UPGRADE: 'future',
+      }
+      delete env.AI_AGENT
+      delete env.CODEX_SANDBOX
+      delete env.CODEX_CI
+      delete env.CODEX_THREAD_ID
+      delete env.CI
+      delete env.GITHUB_ACTIONS
+
+      // The test harness supplies a terminal; Next's build child inherits it.
+      const terminal = pty.spawn(process.execPath, [nextBin, 'build'], {
+        cwd: next.testDir,
+        env,
+        name: 'xterm-256color',
+        cols: 100,
+        rows: 30,
+      })
+      let output = ''
+      let exited = false
+      let exitCode: number | undefined
+      terminal.onData((data: string) => {
+        output += data
+      })
+      terminal.onExit(({ exitCode: code }) => {
+        exited = true
+        exitCode = code
+      })
+
+      return {
+        terminal,
+        get output() {
+          return output
+        },
+        get exited() {
+          return exited
+        },
+        get exitCode() {
+          return exitCode
+        },
+        stop() {
+          if (!exited) {
+            terminal.kill()
+          }
+        },
+      }
+    }
+
+    it('continues building while the prompt is open, then exits after Skip', async () => {
+      const build = startBuild()
+      try {
+        await retry(async () => {
+          expect(build.output).toContain('Upgrade now')
+        }, 10_000)
+
+        // Compilation proceeds even before a menu choice is made.
+        await retry(async () => {
+          expect(build.output).toContain('Compiled successfully')
+        }, 10_000)
+        expect(build.exited).toBe(false)
+        expect(build.output).not.toContain('\x1b[?1049h')
+
+        build.terminal.write('\x1b[B\r')
+        await retry(async () => {
+          expect(build.exited).toBe(true)
+        }, 10_000)
+        expect(build.output).toContain('✓ Skip')
+        expect(build.output).toContain('Compiled successfully')
+        if (build.exitCode !== 0) {
+          throw new Error(
+            `next build exited ${build.exitCode}:\n${build.output.slice(-4000)}`
+          )
+        }
+      } finally {
+        build.stop()
+      }
+    })
+
+    it('starts Upgrade now from the build prompt', async () => {
+      const build = startBuild()
+      try {
+        await retry(async () => {
+          expect(build.output).toContain('Upgrade now')
+        }, 10_000)
+
+        // The parent stops its build child and immediately starts the real
+        // upgrade command. Stop at preparation so no agent modifies the app.
+        build.terminal.write('\r')
+        await retry(async () => {
+          expect(build.output).toContain('Preparing upgrade...')
+        }, 10_000)
+        build.terminal.write('\x03')
+        await retry(async () => {
+          expect(build.exited).toBe(true)
+        }, 10_000)
+      } finally {
+        build.stop()
+      }
+    })
+  })
 })
