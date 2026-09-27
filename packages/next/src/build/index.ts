@@ -1150,9 +1150,10 @@ export default async function build(
       // Reuse the config already loaded for this build. The build child owns
       // the menu while compilation continues; its parent handles Upgrade now.
       if (
-        config.experimental.agenticAutoUpgrade === 'security' ||
-        config.experimental.agenticAutoUpgrade === 'latest' ||
-        config.experimental.agenticAutoUpgrade === 'future' ||
+        config.experimental.agentUpgrade === true ||
+        config.experimental.agentUpgrade === 'security' ||
+        config.experimental.agentUpgrade === 'latest' ||
+        config.experimental.agentUpgrade === 'future' ||
         process.env.__NEXT_AGENTIC_AUTO_UPGRADE
       ) {
         const { nudgeUpgrade, getUpgradeContext } =
@@ -1168,11 +1169,11 @@ export default async function build(
         ).then((action) => {
           if (
             action === 'update' &&
-            upgradeContext.experimental.agenticAutoUpgrade
+            upgradeContext.experimental.agentUpgrade
           ) {
             process.send?.({
               upgradePromptAction: 'update',
-              policy: upgradeContext.experimental.agenticAutoUpgrade,
+              policy: upgradeContext.experimental.agentUpgrade,
             })
           } else if (action === 'interrupt') {
             process.send?.({ upgradePromptAction: 'interrupt' })
