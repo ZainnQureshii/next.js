@@ -506,4 +506,5 @@ describe('agent upgrade prompt', () => {
       }
     })
   })
+
 })
