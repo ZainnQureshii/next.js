@@ -46,6 +46,7 @@ import { AsyncCallbackSet } from './async-callback-set'
 import type { NextServer } from '../next'
 import { durationToString } from '../../build/duration-to-string'
 import { isCI } from '../ci-info'
+import { getAgentName } from '../../telemetry/agent-name'
 
 const debug = setupDebug('next:start-server')
 let startServerSpan: Span | undefined
@@ -370,6 +371,12 @@ export async function startServer(
       // Set experimental HTTPS flag for metadata resolution
       if (selfSignedCertificate) {
         process.env.__NEXT_EXPERIMENTAL_HTTPS = '1'
+      }
+
+      // getEnvInfo loads app .env files. Detect the controlling agent first so
+      // app variables cannot change whether the later upgrade nudge is human.
+      if (isDev) {
+        await getAgentName()
       }
 
       // Get env info first (fast, doesn't require config)

@@ -401,7 +401,17 @@ async function nudgeUpgradeForHuman(
     return 'skip'
   }
   const { promptUpgrade } = require('./prompt') as typeof import('./prompt')
-  const action = await promptUpgrade(message, signal, true)
+  let action: UpgradeAction
+  try {
+    action = await promptUpgrade(message, signal, true)
+  } catch (error) {
+    console.error(
+      new Error('Next.js could not show the upgrade prompt. Continuing.', {
+        cause: error,
+      })
+    )
+    return 'skip'
+  }
   if (signal.aborted) {
     return 'skip'
   }
