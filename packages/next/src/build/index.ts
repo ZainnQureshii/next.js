@@ -1,4 +1,3 @@
-import type { NudgeKind } from '../lib/upgrade/nudge'
 import type { PagesManifest } from './webpack/plugins/pages-manifest-plugin'
 import type {
   ExportPathMap,
@@ -1068,9 +1067,8 @@ export default async function build(
   experimentalBuildMode: 'default' | 'compile' | 'generate' | 'generate-env',
   traceUploadUrl: string | undefined,
   debugBuildPathsPatterns: string[] | undefined,
-  enabledFeatures: Record<string, unknown> = {},
-  allowHumanUpgrade = false
-): Promise<NudgeKind | 'interrupt' | void> {
+  enabledFeatures: Record<string, unknown> = {}
+): Promise<void> {
   const isCompileMode = experimentalBuildMode === 'compile'
   const isGenerateMode = experimentalBuildMode === 'generate'
   NextBuildContext.isCompileMode = isCompileMode
@@ -1149,7 +1147,8 @@ export default async function build(
         )
       loadedConfig = config
 
-      // Reuse the loaded config; ordinary builds do not load upgrade tooling.
+      // Reuse the config already loaded for this build. The build child owns
+      // the menu while compilation continues; its parent handles Upgrade now.
       if (
         config.experimental.agenticAutoUpgrade === 'security' ||
         config.experimental.agenticAutoUpgrade === 'latest' ||
@@ -1159,33 +1158,27 @@ export default async function build(
         const { nudgeUpgrade, getUpgradeContext } =
           require('../lib/upgrade/nudge') as typeof import('../lib/upgrade/nudge')
         const upgradeContext = getUpgradeContext(config)
-        if (allowHumanUpgrade) {
-          // TODO: Do not block the build while prompting for an upgrade.
-          // Preserve all logs for display after the prompt and stop the build before Update.
-          const action = await nudgeUpgrade(
-            dir,
-            upgradeContext,
-            'build',
-            new AbortController().signal
-          ).catch((error) => {
-            Log.warn(`Could not offer the upgrade: ${String(error)}`)
-          })
+        pendingUpgradeNudge = nudgeUpgrade(
+          dir,
+          upgradeContext,
+          'build',
+          process.send && process.env.NEXT_PRIVATE_UPGRADE_BUILD_CHILD === '1'
+            ? new AbortController().signal
+            : null
+        ).then((action) => {
           if (
             action === 'update' &&
             upgradeContext.experimental.agenticAutoUpgrade
           ) {
-            return upgradeContext.experimental.agenticAutoUpgrade
+            process.send?.({
+              upgradePromptAction: 'update',
+              policy: upgradeContext.experimental.agenticAutoUpgrade,
+            })
+          } else if (action === 'interrupt') {
+            process.send?.({ upgradePromptAction: 'interrupt' })
           }
-          if (action === 'interrupt') {
-            return 'interrupt' as const
-          }
-        } else {
-          // Agent checks retain their parallel behavior; humans decide before building.
-          pendingUpgradeNudge = nudgeUpgrade(dir, upgradeContext, 'build').then(
-            () => {}
-          )
-          void pendingUpgradeNudge.catch(() => {})
-        }
+        })
+        void pendingUpgradeNudge.catch(() => {})
       }
 
       // Resolve selective build paths now that the page extensions are known.
