@@ -272,7 +272,7 @@ export async function initialize(opts: {
       developmentConfig.experimental.agentUpgrade === 'security' ||
       developmentConfig.experimental.agentUpgrade === 'latest' ||
       developmentConfig.experimental.agentUpgrade === 'experimental-future' ||
-      process.env.__NEXT_AGENTIC_AUTO_UPGRADE ||
+      process.env.__NEXT_AGENT_UPGRADE ||
       process.env.__NEXT_AGENT_UPGRADE_FORCE_DEVTOOLS_FOR_TESTING === '1'
     ) {
       const { nudgeUpgrade, getUpgradeContext, assessUpgrade } =
@@ -280,7 +280,7 @@ export async function initialize(opts: {
       const context = getUpgradeContext(developmentConfig)
       const installedVersion = process.env.__NEXT_VERSION || 'unknown'
       const policy = context.experimental.agentUpgrade
-      const forced = process.env.__NEXT_AGENTIC_AUTO_UPGRADE === policy
+      const forced = process.env.__NEXT_AGENT_UPGRADE === policy
       const forceDevToolsForTesting =
         process.env.__NEXT_AGENT_UPGRADE_FORCE_DEVTOOLS_FOR_TESTING === '1'
       const assessment: ReturnType<typeof assessUpgrade> =
@@ -313,7 +313,8 @@ export async function initialize(opts: {
                 promptPolicy,
                 context.distDir
               )
-          : null
+          : null,
+        assessment
       )
         .then((action) => {
           if (action === 'update' && context.experimental.agentUpgrade) {
