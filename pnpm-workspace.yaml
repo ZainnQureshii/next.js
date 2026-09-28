@@ -10,6 +10,8 @@ publicHoistPattern:
   - '*eslint*'
 allowBuilds:
   '@ast-grep/cli': true
+  # The upgrade prompt E2E test needs a compiled PTY on Linux ARM CI.
+  node-pty: true
 ignoredBuiltDependencies:
   - '@datadog/native-appsec'
   - '@datadog/native-metrics'
