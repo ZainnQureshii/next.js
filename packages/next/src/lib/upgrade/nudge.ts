@@ -131,6 +131,12 @@ type UpgradeReminder = {
   | { kind: 'future'; targetVersion: string; names: string[] }
 )
 
+type HumanUpgradePrompt = (
+  message: string,
+  signal: AbortSignal,
+  policy: NudgeKind
+) => Promise<UpgradeAction>
+
 export function getUpgradeContext(config: NextConfigComplete): UpgradeContext {
   return {
     distDir: config.distDir,
@@ -373,7 +379,8 @@ async function getUpgradeDismissal(
 async function nudgeUpgradeForHuman(
   directory: string,
   reminder: UpgradeReminder,
-  signal: AbortSignal
+  signal: AbortSignal,
+  prompt: HumanUpgradePrompt | null
 ): Promise<UpgradeAction> {
   if (signal.aborted) {
     return 'skip'
@@ -401,7 +408,19 @@ async function nudgeUpgradeForHuman(
     return 'skip'
   }
   const { promptUpgrade } = require('./prompt') as typeof import('./prompt')
-  const action = await promptUpgrade(message, signal, true)
+  let action: UpgradeAction
+  try {
+    action = prompt
+      ? await prompt(message, signal, reminder.policy)
+      : await promptUpgrade(message, signal, true)
+  } catch (error) {
+    console.error(
+      new Error('Next.js could not show the upgrade prompt. Continuing.', {
+        cause: error,
+      })
+    )
+    return 'skip'
+  }
   if (signal.aborted) {
     return 'skip'
   }
@@ -442,7 +461,8 @@ export async function nudgeUpgrade(
   directory: string,
   config: UpgradeContext,
   command: 'dev' | 'build',
-  signal: AbortSignal | null = null
+  signal: AbortSignal | null = null,
+  prompt: HumanUpgradePrompt | null = null
 ): Promise<UpgradeAction | void> {
   const requested = getRequestedUpgrade()
   const policy = requested ?? config.experimental.agenticAutoUpgrade
@@ -489,6 +509,6 @@ export async function nudgeUpgrade(
       reminder
     )
   } else if (signal) {
-    return nudgeUpgradeForHuman(directory, reminder, signal)
+    return nudgeUpgradeForHuman(directory, reminder, signal, prompt)
   }
 }
