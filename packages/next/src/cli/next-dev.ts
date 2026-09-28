@@ -472,7 +472,9 @@ const nextDev = async (
       const startUpgrade = (policy: unknown) => {
         if (
           sessionStopHandled ||
-          (policy !== 'security' && policy !== 'latest' && policy !== 'future')
+          (policy !== 'security' &&
+            policy !== 'latest' &&
+            policy !== 'experimental-future')
         ) {
           return
         }
@@ -521,7 +523,7 @@ const nextDev = async (
                 if (
                   msg.policy === 'security' ||
                   msg.policy === 'latest' ||
-                  msg.policy === 'future'
+                  msg.policy === 'experimental-future'
                 ) {
                   skippedUpgradePolicy = msg.policy
                 }
@@ -579,7 +581,7 @@ const nextDev = async (
             msg.upgradePromptAction === 'skip' &&
             (msg.policy === 'security' ||
               msg.policy === 'latest' ||
-              msg.policy === 'future')
+              msg.policy === 'experimental-future')
           ) {
             skippedUpgradePolicy = msg.policy
           } else if (msg.upgradePromptAction === 'interrupt') {
