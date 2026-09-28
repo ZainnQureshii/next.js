@@ -69,6 +69,8 @@ import {
 } from './chrome-devtools-workspace'
 import { getNextConfigRuntime, type NextConfigComplete } from '../config-shared'
 import { isCI } from '../ci-info'
+import type { UpgradeAction } from '../../lib/upgrade/prompt'
+import type { NudgeKind } from '../../lib/upgrade/nudge'
 import {
   getRequestInsightsSnapshot,
   isRequestInsightsEnabled,
@@ -127,6 +129,50 @@ export interface LazyRenderServerInstance {
 }
 
 const requestHandlers: Record<string, WorkerRequestHandler> = {}
+
+// The worker decides whether to prompt, but the CLI parent owns terminal input
+// and can start Upgrade even if this worker stops responding. Other choices
+// return here so the worker can save a dismissal before continuing.
+function requestUpgradePromptFromParent(
+  message: string,
+  signal: AbortSignal,
+  policy: NudgeKind,
+  distDir: string
+): Promise<UpgradeAction> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted || !process.connected || !process.send) {
+      resolve('skip')
+      return
+    }
+
+    const cleanup = () => {
+      process.off('message', onChoice)
+      signal.removeEventListener('abort', onAbort)
+      process.off('disconnect', onAbort)
+    }
+    const onChoice = (reply: {
+      upgradePromptChoice: UpgradeAction | undefined
+    }) => {
+      if (reply.upgradePromptChoice) {
+        cleanup()
+        resolve(reply.upgradePromptChoice)
+      }
+    }
+    const onAbort = () => {
+      cleanup()
+      resolve('skip')
+    }
+    process.on('message', onChoice)
+    signal.addEventListener('abort', onAbort, { once: true })
+    process.once('disconnect', onAbort)
+    try {
+      process.send({ upgradePromptMessage: message, policy, distDir })
+    } catch (error) {
+      cleanup()
+      reject(error)
+    }
+  })
+}
 
 export async function initialize(opts: {
   dir: string
@@ -230,22 +276,16 @@ export async function initialize(opts: {
     ) {
       const { nudgeUpgrade, getUpgradeContext, assessUpgrade } =
         require('../../lib/upgrade/nudge') as typeof import('../../lib/upgrade/nudge')
-      const upgradeContext = getUpgradeContext(developmentConfig)
+      const context = getUpgradeContext(developmentConfig)
       const installedVersion = process.env.__NEXT_VERSION || 'unknown'
-      const policy = upgradeContext.experimental.agenticAutoUpgrade
+      const policy = context.experimental.agenticAutoUpgrade
       const forced = process.env.__NEXT_AGENTIC_AUTO_UPGRADE === policy
       const forceDevToolsForTesting =
         process.env.__NEXT_AGENT_UPGRADE_FORCE_DEVTOOLS_FOR_TESTING === '1'
       const assessment: ReturnType<typeof assessUpgrade> =
         isCI || forceDevToolsForTesting
           ? Promise.resolve(null)
-          : assessUpgrade(
-              opts.dir,
-              upgradeContext,
-              installedVersion,
-              null,
-              forced
-            )
+          : assessUpgrade(opts.dir, context, installedVersion, null, forced)
       hasVulnerabilityInsight = assessment.then(
         (result) => result?.kind === 'security' || forceDevToolsForTesting,
         (error) => {
@@ -253,26 +293,40 @@ export async function initialize(opts: {
           return false
         }
       )
-      if (process.env.NEXT_PRIVATE_UPGRADE_PROMPT === '1' && process.send) {
-        // TODO: Do not block dev startup while prompting for an upgrade.
-        // Preserve all logs for display after the prompt and stop dev before Update.
-        // The existing dev worker pauses here while its parent owns the menu.
-        await new Promise<void>((resolve) => {
-          const resume = (message: {
-            nextUpgradeContinue: boolean | undefined
-          }) => {
-            if (message.nextUpgradeContinue) {
-              process.off('message', resume)
-              resolve()
-            }
+      // Config and upgrade assessment stay in the worker while startup runs.
+      // The parent owns menu input so Ctrl+C still works if this worker stalls.
+      void nudgeUpgrade(
+        opts.dir,
+        context,
+        'dev',
+        process.env.NEXT_PRIVATE_UPGRADE_SKIPPED_POLICY === policy
+          ? null
+          : process.send
+            ? new AbortController().signal
+            : null,
+        process.env.NEXT_PRIVATE_WORKER === '1' && process.send
+          ? (message, signal, promptPolicy) =>
+              requestUpgradePromptFromParent(
+                message,
+                signal,
+                promptPolicy,
+                context.distDir
+              )
+          : null
+      )
+        .then((action) => {
+          if (action === 'update' && context.experimental.agenticAutoUpgrade) {
+            process.send?.({
+              upgradePromptAction: 'update',
+              policy: context.experimental.agenticAutoUpgrade,
+            })
+          } else if (action === 'interrupt') {
+            process.send?.({ upgradePromptAction: 'interrupt' })
+          } else if (action === 'skip' && policy) {
+            process.send?.({ upgradePromptAction: 'skip', policy })
           }
-          process.on('message', resume)
-          process.send!({
-            nextUpgradeContext: upgradeContext,
-          })
         })
-      } else {
-        void nudgeUpgrade(opts.dir, developmentConfig, 'dev').catch((error) => {
+        .catch((error) => {
           const { printAndExit } =
             require('./utils') as typeof import('./utils')
           const exitCode =
@@ -284,7 +338,6 @@ export async function initialize(opts: {
             typeof exitCode === 'number' ? exitCode : 1
           )
         })
-      }
     }
 
     // Resolve the effective serverFastRefresh value.

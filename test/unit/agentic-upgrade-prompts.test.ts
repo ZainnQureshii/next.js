@@ -258,7 +258,9 @@ describe('agentic upgrade prompts', () => {
 
     expect(Log.error).toHaveBeenCalledWith(
       'Could not prepare the upgrade:',
-      `Expected Next.js 0.0.0 for the upgrade, but launched ${cliVersion}.`
+      expect.objectContaining({
+        message: `Expected Next.js 0.0.0 for the upgrade, but launched ${cliVersion}.`,
+      })
     )
     expect(process.exitCode).toBe(1)
     expect(global.fetch).toHaveBeenCalledTimes(0)
@@ -373,7 +375,9 @@ describe('agentic upgrade prompts', () => {
 
     expect(Log.error).toHaveBeenCalledWith(
       'Could not prepare the upgrade:',
-      'Could not fetch the latest Next.js canary from npm.'
+      expect.objectContaining({
+        message: 'Could not fetch the latest Next.js canary from npm.',
+      })
     )
     expect(process.exitCode).toBe(1)
     expect(crossSpawn).toHaveBeenCalledTimes(0)
