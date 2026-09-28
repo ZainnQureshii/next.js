@@ -3,16 +3,10 @@ import { promptUpgrade } from 'next/dist/lib/upgrade/prompt'
 
 describe('upgrade menu', () => {
   const stdin = Object.getOwnPropertyDescriptor(process, 'stdin')!
-  const columns = Object.getOwnPropertyDescriptor(process.stdout, 'columns')
-  const rows = Object.getOwnPropertyDescriptor(process.stdout, 'rows')
   let input: PassThrough & { isRaw: boolean; setRawMode: jest.Mock }
-  let screen: string
+  let output: string
 
   beforeEach(() => {
-    Object.defineProperties(process.stdout, {
-      columns: { configurable: true, writable: true, value: 80 },
-      rows: { configurable: true, writable: true, value: 24 },
-    })
     input = Object.assign(new PassThrough(), {
       isRaw: false,
       setRawMode: jest.fn(),
@@ -22,236 +16,152 @@ describe('upgrade menu', () => {
       configurable: true,
       value: input,
     })
-    screen = ''
+    output = ''
     jest.spyOn(process.stdout, 'write').mockImplementation((data: any) => {
-      screen += data.toString()
+      output += data.toString()
       return true
     })
   })
+
   afterEach(() => {
-    for (const [name, descriptor] of [
-      ['columns', columns],
-      ['rows', rows],
-    ] as const) {
-      if (descriptor) {
-        Object.defineProperty(process.stdout, name, descriptor)
-      } else {
-        Reflect.deleteProperty(process.stdout, name)
-      }
-    }
     input.destroy()
     Object.defineProperty(process, 'stdin', stdin)
     jest.restoreAllMocks()
   })
 
-  it.each([
-    ['update', 0],
-    ['skip', 1],
-    ['dismiss', 2],
-  ] as const)('returns %s and restores the terminal', async (action, down) => {
+  it('keeps build output visible after Skip', async () => {
     const exits = process.listenerCount('exit')
-    const resizes = process.stdout.listenerCount('resize')
     const pending = promptUpgrade(
       'Shared recommendation',
       new AbortController().signal
     )
-    expect(screen.startsWith('\x1b[?1049h')).toBe(true)
-    for (let i = 0; i < down; i++) {
-      input.emit('keypress', '', { name: 'down' })
-    }
+
+    expect(output).toContain('Shared recommendation')
+    expect(output).toContain('Upgrade now')
+    expect(output).toContain('Skip until next version')
+
+    // A build warning arrives while the menu is awaiting the user's choice.
+    process.stdout.write('BUILD_WARNING\n')
+    input.emit('keypress', '', { name: 'down' })
     input.emit('keypress', '', { name: 'return' })
-    await expect(pending).resolves.toBe(action)
-    expect(screen).toContain('Shared recommendation')
-    expect(screen).not.toContain('press Enter')
-    expect(screen.endsWith('\x1b[?1049l\x1b[?25h')).toBe(true)
+
+    await expect(pending).resolves.toBe('skip')
+    expect(output).toContain('BUILD_WARNING\n')
+    expect(output.indexOf('BUILD_WARNING')).toBeLessThan(
+      output.lastIndexOf('✓ Skip')
+    )
+    // The menu never switches screens or clears a line containing a log.
+    expect(output).not.toContain('\x1b[?1049')
+    expect(output).not.toContain('\x1b[2J')
+    expect(output).not.toContain('\x1b[2K')
+    expect(output).not.toContain('\x1b[H')
     expect(input.setRawMode.mock.calls).toEqual([[true], [false]])
-    expect(input.listenerCount('keypress')).toBe(0)
     expect(input.isPaused()).toBe(true)
+    expect(input.listenerCount('keypress')).toBe(0)
     expect(process.listenerCount('exit')).toBe(exits)
-    expect(process.stdout.listenerCount('resize')).toBe(resizes)
   })
 
-  it.each([
-    { columns: 20, rows: 24, message: 'Narrow terminal' },
-    { columns: 80, rows: 4, message: 'Short terminal' },
-    { columns: 80, rows: 24, message: 'A future default\n'.repeat(40) },
-    { columns: 30, rows: 10, message: '界'.repeat(90) },
-    { columns: 0, rows: 0, message: 'Unknown terminal size' },
-  ])(
-    'keeps the complete reminder and waits for a choice ($columns × $rows)',
-    async (size) => {
-      process.stdout.columns = size.columns
-      process.stdout.rows = size.rows
-      const pending = promptUpgrade(size.message, new AbortController().signal)
-      expect(screen).toContain(size.message)
-      expect(screen).toContain('Upgrade now')
-      expect(screen).toContain('Skip until next version')
-      expect(screen).not.toContain('Continuing without upgrading.')
-      expect(screen).not.toContain('\x1b[?1049l')
-      screen = ''
-      input.emit('keypress', '', { name: 'down' })
-      expect(screen).toContain(`\x1b[H\x1b[2J${size.message}`)
-      expect(screen).toContain('Skip until next version')
-      input.emit('keypress', '', { name: 'return' })
-      await expect(pending).resolves.toBe('skip')
-      expect(screen.endsWith('\x1b[?1049l\x1b[?25h')).toBe(true)
-    }
-  )
-
-  it.each([true, false])(
-    'preserves selection on resize (canUpdate: %s)',
-    async (canUpdate) => {
-      const resizes = process.stdout.listenerCount('resize')
-      const pending = promptUpgrade(
-        'Reminder',
-        new AbortController().signal,
-        canUpdate
-      )
-      input.emit('keypress', '', { name: 'down' })
-      const initialScreen = screen
-      process.stdout.columns = 60
-      process.stdout.emit('resize')
-      // The cancelled cli-select promise settles before the replacement renders.
-      await new Promise<void>(queueMicrotask)
-      expect(screen.slice(initialScreen.length)).toContain(
-        '\x1b[H\x1b[2JReminder'
-      )
-      process.stdout.columns = 100
-      process.stdout.emit('resize')
-      await new Promise<void>(queueMicrotask)
-      input.emit('keypress', '', { name: 'return' })
-      await expect(pending).resolves.toBe(canUpdate ? 'skip' : 'dismiss')
-      expect(screen.split('\x1b[?1049h')).toHaveLength(2)
-      expect(screen.split('\x1b[?1049l')).toHaveLength(2)
-      expect(process.stdout.listenerCount('resize')).toBe(resizes)
-    }
-  )
-
-  it.each(['abort', 'interrupt', 'escape'] as const)(
-    'handles %s during a resize',
-    async (action) => {
-      const resizes = process.stdout.listenerCount('resize')
-      const controller = new AbortController()
-      const pending = promptUpgrade('Reminder', controller.signal)
-      process.stdout.emit('resize')
-      if (action === 'abort') {
-        controller.abort()
-      } else if (action === 'escape') {
-        input.emit('keypress', '', { name: 'escape' })
-      } else {
-        input.emit('keypress', '', { name: 'c', ctrl: true })
-      }
-      await expect(pending).resolves.toBe(
-        action === 'interrupt' ? 'interrupt' : 'skip'
-      )
-      expect(input.setRawMode).toHaveBeenLastCalledWith(false)
-      expect(process.stdout.listenerCount('resize')).toBe(resizes)
-      expect(screen.endsWith('\x1b[?1049l\x1b[?25h')).toBe(true)
-    }
-  )
-
-  it('handles a resize emitted while the menu is being drawn', async () => {
-    let resized = false
-    jest.spyOn(process.stdout, 'write').mockImplementation((data: any) => {
-      screen += data.toString()
-      if (!resized && data.toString().includes('Upgrade now')) {
-        resized = true
-        process.stdout.columns = 60
-        process.stdout.emit('resize')
-      }
-      return true
-    })
-    const pending = promptUpgrade('Reminder', new AbortController().signal)
-    await new Promise<void>(queueMicrotask)
-    expect(screen.split('Reminder')).toHaveLength(3)
-    input.emit('keypress', '', { name: 'down' })
+  it('returns Upgrade now and offers Skip without it', async () => {
+    const upgrade = promptUpgrade('Reminder', new AbortController().signal)
     input.emit('keypress', '', { name: 'return' })
-    await expect(pending).resolves.toBe('skip')
-  })
+    await expect(upgrade).resolves.toBe('update')
 
-  it('keeps the menu open and the complete reminder after a shrink', async () => {
-    const resizes = process.stdout.listenerCount('resize')
-    const message =
-      'Complete reminder\n\nReference: https://example.com/advisory'
-    const pending = promptUpgrade(message, new AbortController().signal)
-    input.emit('keypress', '', { name: 'down' })
-    screen = ''
-    process.stdout.rows = 4
-    process.stdout.emit('resize')
-    await new Promise<void>(queueMicrotask)
-    expect(screen).toContain(message)
-    expect(screen).toContain('Skip until next version')
-    expect(screen).not.toContain('\x1b[?1049l')
-    input.emit('keypress', '', { name: 'return' })
-    await expect(pending).resolves.toBe('skip')
-    expect(input.setRawMode).toHaveBeenLastCalledWith(false)
-    expect(process.stdout.listenerCount('resize')).toBe(resizes)
-  })
-
-  it('only offers Skip and dismissal when no upgrade is available', async () => {
-    const pending = promptUpgrade(
-      'No eligible target.',
+    output = ''
+    input.isRaw = true
+    input.resume()
+    const noUpgrade = promptUpgrade(
+      'No eligible target',
       new AbortController().signal,
       false
     )
-    expect(screen.includes('Upgrade now')).toBe(false)
-    expect(screen).toContain('Skip until next version')
+    expect(output).not.toContain('Upgrade now')
+    input.emit('keypress', '', { name: 'down' })
+    input.emit('keypress', '', { name: 'return' })
+    await expect(noUpgrade).resolves.toBe('dismiss')
+    expect(input.setRawMode).toHaveBeenLastCalledWith(true)
+    expect(input.isPaused()).toBe(false)
+  })
+
+  it('keeps the choice on resize without redrawing logs', async () => {
+    const pending = promptUpgrade('Reminder', new AbortController().signal)
+    input.emit('keypress', '', { name: 'down' })
+    const beforeResize = output
+    process.stdout.emit('resize')
+    expect(output).toBe(beforeResize)
     input.emit('keypress', '', { name: 'return' })
     await expect(pending).resolves.toBe('skip')
   })
 
-  it('aborts without sending a keypress to other input consumers', async () => {
-    const listener = jest.fn()
-    input.on('keypress', listener)
-    const controller = new AbortController()
-    const pending = promptUpgrade('Reminder', controller.signal)
-    controller.abort()
-    await expect(pending).resolves.toBe('skip')
-    expect(listener).toHaveBeenCalledTimes(0)
-    expect(input.listenerCount('keypress')).toBe(1)
-    expect(input.setRawMode).toHaveBeenLastCalledWith(false)
-    expect(screen.endsWith('\x1b[?1049l\x1b[?25h')).toBe(true)
-  })
+  if (process.platform !== 'win32') {
+    it('restores input before direct suspension and redraws on continue', async () => {
+      const stop = jest.spyOn(process, 'kill').mockImplementation(() => true)
+      const register = jest.spyOn(process, 'on')
+      const unregister = jest.spyOn(process, 'removeListener')
+      const pending = promptUpgrade('Reminder', new AbortController().signal)
+      const suspend = register.mock.calls.find(
+        ([event]) => event === 'SIGTSTP'
+      )?.[1] as () => void
+      const resume = register.mock.calls.find(
+        ([event]) => event === 'SIGCONT'
+      )?.[1] as () => void
 
-  it('returns interruption without self-signalling', async () => {
-    const kill = jest.spyOn(process, 'kill').mockReturnValue(true)
-    const pending = promptUpgrade('Reminder', new AbortController().signal)
-    input.emit('keypress', '', { name: 'c', ctrl: true })
-    await expect(pending).resolves.toBe('interrupt')
-    expect(kill).toHaveBeenCalledTimes(0)
-    expect(input.setRawMode).toHaveBeenLastCalledWith(false)
-    expect(screen.endsWith('\x1b[?1049l\x1b[?25h')).toBe(true)
-  })
+      // Jest does not deliver process signals, so invoke the installed
+      // listeners while keeping SIGSTOP from suspending the test runner.
+      input.emit('keypress', '', { name: 'down' })
+      suspend()
 
-  it('restores the terminal if rendering the reminder fails', async () => {
-    const exits = process.listenerCount('exit')
-    const resizes = process.stdout.listenerCount('resize')
-    jest.spyOn(process.stdout, 'write').mockImplementation((data: any) => {
-      if (data.toString().includes('Shared recommendation')) {
-        throw new Error('Rendering failed')
-      }
-      screen += data.toString()
-      return true
+      expect(input.setRawMode).toHaveBeenLastCalledWith(false)
+      expect(input.isPaused()).toBe(true)
+      expect(stop).toHaveBeenCalledWith(process.pid, 'SIGSTOP')
+
+      resume()
+
+      expect(input.setRawMode).toHaveBeenLastCalledWith(true)
+      expect(output.match(/Reminder/g)).toHaveLength(2)
+      expect(output.slice(output.lastIndexOf('Reminder'))).toMatch(/❯.*Skip/)
+
+      input.emit('keypress', '', { name: 'return' })
+      await expect(pending).resolves.toBe('skip')
+      expect(unregister).toHaveBeenCalledWith('SIGTSTP', suspend)
+      expect(unregister).toHaveBeenCalledWith('SIGCONT', resume)
     })
-    await expect(
-      promptUpgrade('Shared recommendation', new AbortController().signal)
-    ).rejects.toThrow('Rendering failed')
-    expect(input.setRawMode.mock.calls).toEqual([[true], [false]])
-    expect(input.listenerCount('keypress')).toBe(0)
-    expect(input.isPaused()).toBe(true)
-    expect(process.listenerCount('exit')).toBe(exits)
-    expect(process.stdout.listenerCount('resize')).toBe(resizes)
-    expect(screen.endsWith('\x1b[?1049l\x1b[?25h')).toBe(true)
+  }
+
+  it('restores input on abort and interruption', async () => {
+    const controller = new AbortController()
+    const aborted = promptUpgrade('Reminder', controller.signal)
+    controller.abort()
+    await expect(aborted).resolves.toBe('skip')
+    expect(input.setRawMode).toHaveBeenLastCalledWith(false)
+
+    const interrupted = promptUpgrade('Reminder', new AbortController().signal)
+    input.emit('keypress', '', { name: 'c', ctrl: true })
+    await expect(interrupted).resolves.toBe('interrupt')
+    expect(input.setRawMode).toHaveBeenLastCalledWith(false)
+
+    const suspended = promptUpgrade('Reminder', new AbortController().signal)
+    input.emit('keypress', '', { name: 'z', ctrl: true })
+    await expect(suspended).resolves.toBe('skip')
+    expect(input.setRawMode).toHaveBeenLastCalledWith(false)
+
+    const escaped = promptUpgrade('Reminder', new AbortController().signal)
+    input.emit('keypress', '', { name: 'escape' })
+    await expect(escaped).resolves.toBe('skip')
+    expect(input.setRawMode).toHaveBeenLastCalledWith(false)
   })
 
-  it('preserves an already raw and flowing input stream', async () => {
+  it('restores the original input state if rendering fails', async () => {
     input.isRaw = true
     input.resume()
-    const pending = promptUpgrade('Reminder', new AbortController().signal)
-    input.emit('keypress', '', { name: 'escape' })
-    await expect(pending).resolves.toBe('skip')
-    expect(input.setRawMode).toHaveBeenLastCalledWith(true)
+    jest.spyOn(process.stdout, 'write').mockImplementation(() => {
+      throw new Error('Rendering failed')
+    })
+
+    await expect(
+      promptUpgrade('Reminder', new AbortController().signal)
+    ).rejects.toThrow('Rendering failed')
+    expect(input.setRawMode.mock.calls).toEqual([[true], [true]])
     expect(input.isPaused()).toBe(false)
-    expect(screen.endsWith('\x1b[?1049l\x1b[?25h')).toBe(true)
+    expect(input.listenerCount('keypress')).toBe(0)
   })
 })

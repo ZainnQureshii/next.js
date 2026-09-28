@@ -1,6 +1,4 @@
 import { emitKeypressEvents, type Key } from 'readline'
-import { PassThrough } from 'stream'
-import cliSelect from 'next/dist/compiled/cli-select'
 import { bold, cyan } from '../picocolors'
 
 export type UpgradeAction = 'update' | 'skip' | 'dismiss' | 'interrupt'
@@ -13,120 +11,147 @@ export async function promptUpgrade(
   if (signal.aborted) {
     return 'skip'
   }
+
   const input = process.stdin
   const terminal = process.stdout
-  const values = {
-    ...(canUpdate ? { update: 'Upgrade now' } : {}),
-    skip: 'Skip',
-    dismiss: 'Skip until next version',
-  }
-  const labels = Object.values(values)
-  const heading = `${message}\n\n`
+  const choices: { action: UpgradeAction; label: string }[] = [
+    ...(canUpdate ? [{ action: 'update' as const, label: 'Upgrade now' }] : []),
+    { action: 'skip', label: 'Skip' },
+    { action: 'dismiss', label: 'Skip until next version' },
+  ]
   const wasRaw = input.isRaw ?? false
   const wasFlowing = input.readableFlowing
-  // Isolate cancellation from other consumers of stdin. cli-select can close
-  // this stream without changing the real terminal's original raw/flow state.
-  const keys = Object.assign(new PassThrough(), { setRawMode() {} })
-  let interrupted = false
-  let cancelled = false
-  let resized = false
   let selectedIndex = 0
-  const renderValue = (value: string, selected: boolean) => {
-    if (value === labels[0]) {
-      // We own this screen. Redraw from the top instead of relying on
-      // cli-select's one-row-per-choice cursor movement when choices wrap.
-      terminal.write(`\x1b[H\x1b[2J${heading}`)
-    }
-    if (selected) {
-      selectedIndex = labels.indexOf(value)
-    }
-    return selected ? cyan(bold(value)) : value
-  }
-  const cancel = () => {
-    cancelled = true
-    keys.emit('keypress', '', { name: 'escape' })
-  }
-  const onKey = (text: string, key: Key) => {
-    if (key?.ctrl && key.name === 'c') {
-      interrupted = true
-    }
-    if (key?.name === 'escape') {
-      cancelled = true
-    }
-    keys.emit('keypress', text, key)
-  }
-  const onResize = () => {
-    resized = true
-    // A terminal write can emit resize while cli-select is still opening.
-    // Wait until its selection callback is installed before cancelling it.
-    queueMicrotask(() => {
-      if (resized && !restored) {
-        keys.emit('keypress', '', { name: 'escape' })
-      }
-    })
-  }
   let restored = false
+  let suspended = false
+  let choose!: (action: UpgradeAction) => void
+  let fail!: (error: unknown) => void
+  const selection = new Promise<UpgradeAction>((resolve, reject) => {
+    choose = resolve
+    fail = reject
+  })
+
   const restore = () => {
     if (restored) {
       return
     }
     restored = true
     input.removeListener('keypress', onKey)
-    terminal.removeListener('resize', onResize)
-    signal.removeEventListener('abort', cancel)
+    signal.removeEventListener('abort', onAbort)
     process.removeListener('exit', restore)
-    keys.destroy()
+    if (process.platform !== 'win32') {
+      process.removeListener('SIGTSTP', onSuspend)
+      process.removeListener('SIGCONT', onContinue)
+    }
     try {
       input.setRawMode(wasRaw)
     } finally {
       if (wasFlowing !== true) {
         input.pause()
       }
-      terminal.write('\x1b[?1049l\x1b[?25h')
     }
   }
-  // CLI signal handlers may exit synchronously, before the promise settles.
+
+  const finish = (action: UpgradeAction, confirmed: boolean = false) => {
+    if (restored) {
+      return
+    }
+    try {
+      restore()
+      if (confirmed) {
+        terminal.write(`\n  ✓ ${choices[selectedIndex].label}\n`)
+      }
+      choose(action)
+    } catch (error) {
+      fail(error)
+    }
+  }
+
+  const onAbort = () => finish('skip')
+  const render = () => {
+    // Append after any output produced while this process was suspended.
+    terminal.write(
+      `\n${message}\n\n${choices
+        .map((choice, index) =>
+          index === selectedIndex
+            ? `  ❯ ${cyan(bold(choice.label))}`
+            : `    ${choice.label}`
+        )
+        .join('\n')}\n`
+    )
+  }
+  const onSuspend = () => {
+    if (restored || suspended) {
+      return
+    }
+    suspended = true
+    try {
+      // A direct SIGTSTP bypasses keypress handling. Restore cooked input
+      // before stopping so the shell does not inherit our raw mode.
+      input.setRawMode(wasRaw)
+      if (wasFlowing !== true) {
+        input.pause()
+      }
+      process.kill(process.pid, 'SIGSTOP')
+    } catch (error) {
+      fail(error)
+    }
+  }
+  const onContinue = () => {
+    if (restored || !suspended) {
+      return
+    }
+    try {
+      input.setRawMode(true)
+      input.resume()
+      suspended = false
+      render()
+    } catch (error) {
+      fail(error)
+    }
+  }
+  const onKey = (_text: string, key: Key) => {
+    if (key?.ctrl && key.name === 'c') {
+      finish('interrupt')
+    } else if (key?.name === 'escape' || (key?.ctrl && key.name === 'z')) {
+      // Leave raw mode so a subsequent Ctrl+Z uses normal shell job control.
+      finish('skip')
+    } else if (key?.name === 'up' || key?.name === 'down') {
+      selectedIndex =
+        (selectedIndex + (key.name === 'down' ? 1 : -1) + choices.length) %
+        choices.length
+      try {
+        // Dev/build can write to this terminal too. Append the selection;
+        // cursor movement or clearing rows could erase their output.
+        terminal.write(`\n  ❯ ${cyan(bold(choices[selectedIndex].label))}\n`)
+      } catch (error) {
+        fail(error)
+      }
+    } else if (key?.name === 'return') {
+      finish(choices[selectedIndex].action, true)
+    }
+  }
+
+  // A synchronous CLI exit still needs to restore the terminal's input mode.
   process.once('exit', restore)
+  if (process.platform !== 'win32') {
+    process.on('SIGTSTP', onSuspend)
+    process.on('SIGCONT', onContinue)
+  }
   try {
-    // Keep startup output on the normal screen while the menu owns the terminal.
-    terminal.write('\x1b[?1049h')
     emitKeypressEvents(input)
     input.on('keypress', onKey)
-    terminal.on('resize', onResize)
-    signal.addEventListener('abort', cancel, { once: true })
+    signal.addEventListener('abort', onAbort, { once: true })
     input.setRawMode(true)
     input.resume()
-    while (true) {
-      resized = false
-      const selection = cliSelect({
-        values,
-        defaultValue: selectedIndex,
-        selected: cyan('❯'),
-        unselected: ' ',
-        indentation: 2,
-        cleanup: true,
-        // cli-select types inputStream as a WriteStream, but only consumes
-        // keypress events and the raw-mode methods supplied by this proxy.
-        inputStream: keys as unknown as NodeJS.WriteStream,
-        outputStream: terminal,
-        valueRenderer: renderValue,
-      })
-      if (signal.aborted || cancelled) {
-        cancel()
-      }
-      try {
-        const { id } = await selection
-        return signal.aborted || cancelled ? 'skip' : (id as UpgradeAction)
-      } catch (error) {
-        // cli-select rejects without a reason for Escape / Ctrl+C.
-        if (error) {
-          throw error
-        }
-        if (!resized || signal.aborted || cancelled || interrupted) {
-          return interrupted ? 'interrupt' : 'skip'
-        }
-      }
+    if (signal.aborted) {
+      finish('skip')
+    } else {
+      // Never switch screens or redraw existing lines: logs printed while the
+      // prompt is open must remain visible after Skip.
+      render()
     }
+    return await selection
   } finally {
     restore()
   }
