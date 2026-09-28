@@ -314,7 +314,7 @@ export async function initialize(opts: {
                 context.distDir
               )
           : null,
-        assessment
+        isCI || forceDevToolsForTesting ? null : assessment
       )
         .then((action) => {
           if (action === 'update' && context.experimental.agentUpgrade) {
