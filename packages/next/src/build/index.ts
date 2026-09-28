@@ -1153,7 +1153,7 @@ export default async function build(
         config.experimental.agentUpgrade === true ||
         config.experimental.agentUpgrade === 'security' ||
         config.experimental.agentUpgrade === 'latest' ||
-        config.experimental.agentUpgrade === 'future' ||
+        config.experimental.agentUpgrade === 'experimental-future' ||
         process.env.__NEXT_AGENTIC_AUTO_UPGRADE
       ) {
         const { nudgeUpgrade, getUpgradeContext } =
@@ -1167,10 +1167,7 @@ export default async function build(
             ? new AbortController().signal
             : null
         ).then((action) => {
-          if (
-            action === 'update' &&
-            upgradeContext.experimental.agentUpgrade
-          ) {
+          if (action === 'update' && upgradeContext.experimental.agentUpgrade) {
             process.send?.({
               upgradePromptAction: 'update',
               policy: upgradeContext.experimental.agentUpgrade,

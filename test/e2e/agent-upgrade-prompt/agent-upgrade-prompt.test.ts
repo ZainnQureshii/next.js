@@ -38,7 +38,7 @@ describe('agent upgrade prompt', () => {
       if (mode === 'normal') {
         delete env.__NEXT_AGENTIC_AUTO_UPGRADE
       } else {
-        env.__NEXT_AGENTIC_AUTO_UPGRADE = 'future'
+        env.__NEXT_AGENTIC_AUTO_UPGRADE = 'experimental-future'
       }
 
       if (waitForShutdown) {
@@ -522,7 +522,7 @@ describe('agent upgrade prompt', () => {
       )('node-pty')
       const env: NodeJS.ProcessEnv = {
         ...process.env,
-        __NEXT_AGENTIC_AUTO_UPGRADE: 'future',
+        __NEXT_AGENTIC_AUTO_UPGRADE: 'experimental-future',
       }
       delete env.AI_AGENT
       delete env.CODEX_SANDBOX

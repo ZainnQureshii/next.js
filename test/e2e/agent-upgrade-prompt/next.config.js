@@ -1,5 +1,5 @@
 module.exports = {
   experimental: {
-    agenticAutoUpgrade: 'future',
+    agentUpgrade: 'experimental-future',
   },
 }

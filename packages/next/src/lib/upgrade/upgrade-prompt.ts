@@ -63,7 +63,9 @@ export async function runBuildWithUpgradePrompt(
     if (
       action === 'update' &&
       !upgrade &&
-      (policy === 'security' || policy === 'latest' || policy === 'future')
+      (policy === 'security' ||
+        policy === 'latest' ||
+        policy === 'experimental-future')
     ) {
       child.kill('SIGTERM')
       // Do not wait for build shutdown before the upgrade starts.
